@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vendas
+  namespace: revenda
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vendas
+  template:
+    metadata:
+      labels:
+        app: vendas
+    spec:
+      containers:
+        - name: vendas
+          image: IMAGE_VENDAS
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3003
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: VENDAS_PORT
+              value: "3003"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: vendas_db
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: vendas-db
+                  key: host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vendas-db
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vendas-db
+                  key: password
+            - name: CLIENTES_SERVICE_URL
+              value: http://clientes.revenda.svc.cluster.local:3001
+            - name: VEICULOS_SERVICE_URL
+              value: http://veiculos.revenda.svc.cluster.local:3002
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vendas
+  namespace: revenda
+spec:
+  selector:
+    app: vendas
+  ports:
+    - name: http
+      port: 3003
+      targetPort: http

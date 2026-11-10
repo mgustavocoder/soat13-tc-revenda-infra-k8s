@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: revenda
+  namespace: revenda
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /api/clientes
+            pathType: Prefix
+            backend:
+              service:
+                name: clientes
+                port:
+                  number: 3001
+          - path: /api/veiculos
+            pathType: Prefix
+            backend:
+              service:
+                name: veiculos
+                port:
+                  number: 3002
+          - path: /api/vendas
+            pathType: Prefix
+            backend:
+              service:
+                name: vendas
+                port:
+                  number: 3003
+          - path: /api/health
+            pathType: Prefix
+            backend:
+              service:
+                name: clientes
+                port:
+                  number: 3001
