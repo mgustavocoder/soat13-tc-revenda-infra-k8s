@@ -21,7 +21,7 @@ service_dir() {
   esac
 }
 
-for tool in aws terraform kubectl docker; do
+for tool in aws terraform kubectl docker python3; do
   command -v "$tool" >/dev/null || { echo "Required tool not found: $tool" >&2; exit 1; }
 done
 for source_dir in "$CLIENTES_DIR" "$VEICULOS_DIR" "$VENDAS_DIR"; do
@@ -62,7 +62,7 @@ DB_HOSTS_JSON="$(terraform -chdir="$DEV_DIR/soat13-tc-revenda-infra-db" output -
 DB_USERNAME="$DB_MASTER_USERNAME"
 umask 077
 for service in clientes veiculos vendas; do
-  db_host="$(printf '%s' "$DB_HOSTS_JSON" | jq -r --arg service "$service" '.[$service]')"
+  db_host="$(printf '%s' "$DB_HOSTS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$service")"
   secret_file="$TMP_DIR/${service}-db.env"
   printf 'host=%s\nusername=%s\npassword=%s\n' "$db_host" "$DB_USERNAME" "$DB_MASTER_PASSWORD" >"$secret_file"
   kubectl -n revenda create secret generic "${service}-db" \

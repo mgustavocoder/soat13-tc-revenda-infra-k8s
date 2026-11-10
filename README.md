@@ -23,7 +23,7 @@ The RDS stack is maintained in `soat13-tc-revenda-infra-db`.
 
 ## Prerequisites
 
-AWS CLI, Terraform >= 1.9, Docker, `kubectl`, `jq`, `curl`, and access to the
+AWS CLI, Terraform >= 1.9, Docker, `kubectl`, Python 3, `curl`, and access to the
 AWS Load Balancer Controller Helm chart. Configure an AWS CLI profile for
 the new account after revoking any exposed keys.
 
