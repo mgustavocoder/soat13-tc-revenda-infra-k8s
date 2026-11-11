@@ -44,11 +44,13 @@ module "eks" {
 
   eks_managed_node_groups = {
     application = {
-      name           = "${var.cluster_name}-workers"
-      instance_types = [var.node_instance_type]
-      min_size       = var.min_nodes
-      max_size       = var.max_nodes
-      desired_size   = var.desired_nodes
+      name                     = "${var.cluster_name}-workers"
+      iam_role_name            = "${var.project_name}-workers"
+      iam_role_use_name_prefix = false
+      instance_types           = [var.node_instance_type]
+      min_size                 = var.min_nodes
+      max_size                 = var.max_nodes
+      desired_size             = var.desired_nodes
     }
   }
 
