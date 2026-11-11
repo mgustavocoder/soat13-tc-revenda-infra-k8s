@@ -130,7 +130,10 @@ resource "helm_release" "load_balancer_controller" {
     value = aws_iam_role.load_balancer_controller.arn
   }
 
-  depends_on = [aws_iam_role_policy_attachment.load_balancer_controller]
+  depends_on = [
+    aws_iam_role_policy_attachment.load_balancer_controller,
+    module.eks,
+  ]
 }
 
 output "vpc_id" {
