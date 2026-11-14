@@ -350,8 +350,7 @@ def build():
               ['soat13-tc-revenda-infra-db', 'Três instâncias RDS MySQL privadas e credenciais no Secrets Manager'],
           ], [0.36, 0.64]),
           Spacer(1, 1.2 * cm),
-          p('Versão do documento: novembro de 2026 — reflete a refatoração para Clean Architecture e a '
-            'migração da saga orquestrada para a saga coreografada.', 'small'),
+          p('Versão do documento: novembro de 2026.', 'small'),
           PageBreak()]
 
     # 1. Visão geral
@@ -440,11 +439,10 @@ src/
             '<b>saga</b>, uma sequência de transações locais encadeadas por eventos, com compensações para desfazer '
             'etapas quando algo falha.'),
           p('Por que coreografia', 'h2'),
-          p('Na versão anterior a fila SQS transportava <i>comandos</i> (RESERVAR_VEICULO, CONFIRMAR_PAGAMENTO) '
-            'consumidos pelo próprio worker de Vendas, que chamava a API de Veículos por HTTP: uma saga '
-            '<b>orquestrada</b>, com Vendas acoplado às rotas e regras de Veículos e um cancelamento síncrono. '
-            'Agora cada serviço publica <i>eventos de domínio</i> na sua própria fila e reage aos eventos do outro. '
-            'Nenhum serviço comanda o outro, e Veículos decide sozinho se o veículo pode ser reservado.'),
+          p('Cada serviço publica <i>eventos de domínio</i> na sua própria fila e reage aos eventos do outro, sem '
+            'orquestrador central. Nenhum serviço comanda o outro nem conhece as rotas HTTP do outro: Veículos '
+            'decide sozinho se o veículo pode ser reservado, e Vendas apenas reage ao resultado. Isso mantém os '
+            'serviços desacoplados e permite que cada um evolua e escale de forma independente.'),
           table([
               ['Fila', 'Produtor', 'Consumidor', 'Eventos'],
               ['vendas-eventos', 'Vendas (API e worker)', 'veiculos-worker',
@@ -536,14 +534,8 @@ src/
                'cancelamento com compensação, falhas de reserva, duplicatas e conflitos.'],
               ['Smoke test', 'scripts/smoke-test.mjs: 403 sem API key, CORS e GET 200 nas rotas principais.'],
           ], [0.18, 0.82]),
-          p('Migração da fila antiga', 'h2'),
-          p('A troca da fila de comandos pelas filas de eventos é feita em duas etapas. O arquivo '
-            '<font name="Mono">legacy-vendas-queue.tf</font> mantém a fila antiga enquanto as novas são criadas e as '
-            'aplicações trocadas; depois que ela estiver vazia, o arquivo é removido num deploy seguinte. Assim, um '
-            'apply que falhe no meio não deixa os pods em execução sem fila.'),
           p('Próximos passos sugeridos', 'h2'),
           bullets([
-              'Remover <font name="Mono">legacy-vendas-queue.tf</font> e a permissão sobre a fila antiga.',
               'Adotar transactional outbox em Vendas e Veículos.',
               'Autenticação por usuário (ex.: Cognito/JWT) e AWS WAF no API Gateway.',
               'Alarmes do CloudWatch para mensagens na DLQ e idade da mensagem mais antiga nas filas.',
