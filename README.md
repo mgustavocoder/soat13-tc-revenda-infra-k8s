@@ -139,9 +139,19 @@ failures become `*_FALHOU` events, and retryable failures are retried up to five
 receives before going to each queue's DLQ. On the last attempt the vehicles
 worker publishes the failure event so the sale does not wait forever.
 
-Applying this version replaces the previous `soat13-tc-revenda-vendas` command
-queue with the two events queues. Drain or discard messages still in the old
-queue before applying; the IRSA role of Vendas is kept through `moved` blocks.
+Migration from the previous command queue is done in two steps so a failed
+apply never breaks the running services:
+
+1. Deploy this version. `legacy-vendas-queue.tf` keeps the old
+   `soat13-tc-revenda-vendas` queue (and its DLQ) while the events queues are
+   created and the applications are switched over. The IRSA role of Vendas is
+   kept through `moved` blocks.
+2. After the new workers are running and the old queue is empty, delete
+   `legacy-vendas-queue.tf` and deploy again to remove the old queue.
+
+The deployment identity must be allowed to create the new queues (see the
+permissions above) before step 1; otherwise Terraform stops with
+`AccessDenied` on `sqs:CreateQueue`.
 
 The deployment uses two Terraform applies for the API Gateway because the
 internal ALB listener is created by the Kubernetes ingress controller after
