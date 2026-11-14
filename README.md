@@ -37,7 +37,8 @@ flowchart LR
 ```
 
 The API Gateway is the public application entry point. The ALB, EKS workers,
-databases, and SQS worker are in private network paths. This is not a fully
+databases, and the SQS workers (`vendas-worker` and `veiculos-worker`) are in
+private network paths. This is not a fully
 serverless design: EKS worker nodes are EC2 instances selected to run the
 existing long-lived HTTP services and worker containers.
 
@@ -76,16 +77,14 @@ existing long-lived HTTP services and worker containers.
   database credentials, in addition to the permissions required by Terraform,
   EKS, ECR, RDS, and API Gateway. It must also be allowed to read the
   `AWSServiceRoleForAmazonEKSNodegroup` IAM role.
-  - The deployment identity also needs permission to manage SQS queues and the
-    worker IAM role/policy. The worker accesses the queue through a narrowly
-    scoped IRSA role; do not add AWS credentials to Kubernetes secrets. Grant the
-    deployment identity `sqs:CreateQueue`, `DeleteQueue`, `GetQueueAttributes`,
-    `GetQueueUrl`, `ListQueueTags`, `SetQueueAttributes`, `TagQueue`, and
-    `UntagQueue` on
-    `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-vendas-eventos*`
-    and `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-veiculos-eventos*`
-    (each queue and its `-dlq`), plus IAM permissions for the
-    `soat13-tc-revenda-vendas-sqs` and `soat13-tc-revenda-veiculos-sqs` roles.
+  - The deployment identity also needs permission to manage the SQS queues and
+    the IRSA roles/policies of the workers. The workers access the queues
+    through narrowly scoped IRSA roles; do not add AWS credentials to Kubernetes
+    secrets. Grant the deployment identity `sqs:CreateQueue`, `DeleteQueue`,
+    `GetQueueAttributes`, `GetQueueUrl`, `ListQueueTags`, `SetQueueAttributes`,
+    `TagQueue`, and `UntagQueue` on
+    `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-*`, and the
+    IAM role actions on `arn:aws:iam::${AWS_ACCOUNT_ID}:role/soat13-tc-revenda-*`.
 - Terraform state contains sensitive infrastructure values. Use the private,
   encrypted, versioned S3 bucket created by `scripts/bootstrap-state.sh`.
 
@@ -156,6 +155,28 @@ permissions above) before step 1; otherwise Terraform stops with
 The deployment uses two Terraform applies for the API Gateway because the
 internal ALB listener is created by the Kubernetes ingress controller after
 the first EKS apply.
+
+## Kubernetes workloads
+
+| Deployment | Image | ServiceAccount (IRSA) | Role |
+|------------|-------|-----------------------|------|
+| `clientes` | clientes | default | HTTP API `/api/clientes` |
+| `veiculos` | veiculos | default | HTTP API `/api/veiculos` |
+| `veiculos-worker` | veiculos (`npm run worker`) | `veiculos` | Consumes `vendas-eventos`, publishes `veiculos-eventos` |
+| `vendas` | vendas | `vendas` | HTTP API `/api/vendas`; publishes `vendas-eventos` |
+| `vendas-worker` | vendas (`npm run worker`) | `vendas` | Consumes `veiculos-eventos`, publishes compensations |
+
+Every deployment runs two replicas. Only `/api/*` paths are routed by the
+Ingress; the `/internal/*` routes are reachable only inside the cluster.
+
+## Architecture document
+
+[`docs/arquitetura-seguranca-saga.pdf`](docs/arquitetura-seguranca-saga.pdf)
+describes the AWS architecture, the Clean Architecture layers of the services,
+the choreographed Saga (events, state machine, compensations, idempotency),
+security controls, and known limitations. It is generated from
+`docs/build_architecture_pdf.py` (requires `reportlab` 4.x and the DejaVu
+fonts): `python3 docs/build_architecture_pdf.py`.
 
 ## Production smoke test
 
