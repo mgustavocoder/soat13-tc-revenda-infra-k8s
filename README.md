@@ -16,10 +16,14 @@ flowchart LR
     alb --> customers["Clientes API<br/>EKS"]
     alb --> vehicles["Veículos API<br/>EKS"]
     alb --> sales["Vendas API<br/>EKS"]
-    sales --> queue["SQS standard + DLQ"]
-    queue --> worker["Vendas worker<br/>EKS + IRSA"]
-    worker --> customers
-    worker --> vehicles
+    sales -->|"GET /internal/clientes"| customers
+    sales -->|"VENDA_CRIADA<br/>PAGAMENTO_RECEBIDO<br/>VENDA_CANCELADA"| salesEvents["SQS vendas-eventos + DLQ"]
+    salesEvents --> vehiclesWorker["Veículos worker<br/>EKS + IRSA"]
+    vehiclesWorker -->|"VEICULO_RESERVADO / VEICULO_VENDIDO<br/>VEICULO_*_FALHOU / VEICULO_LIBERADO"| vehicleEvents["SQS veiculos-eventos + DLQ"]
+    vehicleEvents --> worker["Vendas worker<br/>EKS + IRSA"]
+    worker -.->|"compensação VENDA_CANCELADA"| salesEvents
+    vehiclesWorker --> db2
+    worker --> db3
     customers --> db1[("Private RDS<br/>clientes")]
     vehicles --> db2[("Private RDS<br/>veiculos")]
     sales --> db3[("Private RDS<br/>vendas")]
@@ -29,6 +33,7 @@ flowchart LR
     k8sSecrets -.-> vehicles
     k8sSecrets -.-> sales
     k8sSecrets -.-> worker
+    k8sSecrets -.-> vehiclesWorker
 ```
 
 The API Gateway is the public application entry point. The ALB, EKS workers,
@@ -55,8 +60,9 @@ existing long-lived HTTP services and worker containers.
   into Kubernetes Secrets; this Terraform configuration does not enable EKS
   envelope encryption for Kubernetes Secrets. Restrict EKS RBAC and plan
   encryption at rest or Secrets Store CSI integration.
-- The SQS worker uses IRSA scoped to the sales queue; it does not need static
-  AWS credentials. Standard SQS delivery is at least once, so consumers must
+- The `vendas` and `veiculos` ServiceAccounts use separate IRSA roles: each one
+  may only publish to its own events queue and consume the other service's
+  events queue. No static AWS credentials are needed. Standard SQS delivery is at least once, so consumers must
   tolerate duplicate messages.
 - The API key is the only public API access control currently configured.
   There is no per-user identity, AWS WAF, or application-level authorization
@@ -76,8 +82,10 @@ existing long-lived HTTP services and worker containers.
     deployment identity `sqs:CreateQueue`, `DeleteQueue`, `GetQueueAttributes`,
     `GetQueueUrl`, `ListQueueTags`, `SetQueueAttributes`, `TagQueue`, and
     `UntagQueue` on
-    `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-vendas` and
-    `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-vendas-dlq`.
+    `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-vendas-eventos*`
+    and `arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:soat13-tc-revenda-veiculos-eventos*`
+    (each queue and its `-dlq`), plus IAM permissions for the
+    `soat13-tc-revenda-vendas-sqs` and `soat13-tc-revenda-veiculos-sqs` roles.
 - Terraform state contains sensitive infrastructure values. Use the private,
   encrypted, versioned S3 bucket created by `scripts/bootstrap-state.sh`.
 
@@ -111,14 +119,29 @@ reads them to initialize the schemas and Kubernetes secrets without printing
 them. Restrict access to the encrypted state bucket and the Secrets Manager
 secrets. Do not put credentials in `terraform.tfvars`.
 
-The sales service uses a standard SQS queue and a dead-letter queue. Reservation
-and payment-confirmation requests return `202 Accepted` with a sale code and
-`statusUrl`; use `GET /api/vendas/{codigo}` to check completion. A separate
-two-replica `vendas-worker` deployment consumes messages using IRSA. Messages
-that fail permanently are recorded as failed, while retryable failures are
-retried up to five receives and eventually sent to the DLQ. The worker
-coordinates the Saga in the Vendas service; AWS Step Functions is not currently
-deployed.
+### Saga coreografada (vendas ↔ veículos)
+
+The sale flow is a **choreographed Saga**: there is no central coordinator.
+Each service runs its local transaction, publishes a domain event to its own
+SQS standard queue, and reacts to the other service's events.
+
+| Queue | Producer | Consumer | Events |
+|-------|----------|----------|--------|
+| `soat13-tc-revenda-vendas-eventos` | Vendas API / worker | `veiculos-worker` | `VENDA_CRIADA`, `PAGAMENTO_RECEBIDO`, `VENDA_CANCELADA` |
+| `soat13-tc-revenda-veiculos-eventos` | `veiculos-worker` | `vendas-worker` | `VEICULO_RESERVADO`, `VEICULO_RESERVA_FALHOU`, `VEICULO_VENDIDO`, `VEICULO_VENDA_FALHOU`, `VEICULO_LIBERADO` |
+
+Reservation and payment-confirmation requests return `202 Accepted` with a sale
+code and `statusUrl`; use `GET /api/vendas/{codigo}` to check completion.
+Compensations are events too: cancelling a sale publishes `VENDA_CANCELADA`,
+which makes Veículos release the reservation. Consumers are idempotent (the
+vehicle stores the code of the sale that owns its reservation), permanent
+failures become `*_FALHOU` events, and retryable failures are retried up to five
+receives before going to each queue's DLQ. On the last attempt the vehicles
+worker publishes the failure event so the sale does not wait forever.
+
+Applying this version replaces the previous `soat13-tc-revenda-vendas` command
+queue with the two events queues. Drain or discard messages still in the old
+queue before applying; the IRSA role of Vendas is kept through `moved` blocks.
 
 The deployment uses two Terraform applies for the API Gateway because the
 internal ALB listener is created by the Kubernetes ingress controller after

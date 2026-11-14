@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: veiculos
+  namespace: revenda
+  annotations:
+    eks.amazonaws.com/role-arn: VEICULOS_QUEUE_ROLE_ARN
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: veiculos-worker
+  namespace: revenda
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: veiculos-worker
+  template:
+    metadata:
+      labels:
+        app: veiculos-worker
+    spec:
+      serviceAccountName: veiculos
+      containers:
+        - name: worker
+          image: IMAGE_VEICULOS
+          imagePullPolicy: Always
+          command: ["npm", "run", "worker"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: veiculos_db
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: veiculos-db
+                  key: host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: veiculos-db
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: veiculos-db
+                  key: password
+            - name: AWS_REGION
+              value: AWS_REGION_VALUE
+            # Consome VENDA_CRIADA, PAGAMENTO_RECEBIDO e VENDA_CANCELADA
+            - name: SQS_VENDAS_EVENTOS_URL
+              value: VENDAS_EVENTOS_QUEUE_URL
+            # Publica eventos VEICULO_*
+            - name: SQS_VEICULOS_EVENTOS_URL
+              value: VEICULOS_EVENTOS_QUEUE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

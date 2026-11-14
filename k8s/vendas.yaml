@@ -55,12 +55,10 @@ spec:
                   key: password
             - name: CLIENTES_SERVICE_URL
               value: http://clientes.revenda.svc.cluster.local:3001
-            - name: VEICULOS_SERVICE_URL
-              value: http://veiculos.revenda.svc.cluster.local:3002
             - name: AWS_REGION
-              value: AWS_REGION
-            - name: SQS_QUEUE_URL
-              value: VENDAS_QUEUE_URL
+              value: AWS_REGION_VALUE
+            - name: SQS_VENDAS_EVENTOS_URL
+              value: VENDAS_EVENTOS_QUEUE_URL
           readinessProbe:
             httpGet:
               path: /api/health

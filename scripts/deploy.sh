@@ -40,7 +40,7 @@ CLUSTER_NAME="soat13-tc-revenda"
 TAG="${IMAGE_TAG:-$(date -u +%Y%m%d%H%M%S)}"
 ECR_HOST="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -f "$TMP_DIR/clientes.yaml" "$TMP_DIR/veiculos.yaml" "$TMP_DIR/vendas.yaml" "$TMP_DIR/vendas-worker.yaml" "$TMP_DIR/clientes-db.env" "$TMP_DIR/veiculos-db.env" "$TMP_DIR/vendas-db.env"; rmdir "$TMP_DIR"' EXIT
+trap 'rm -f "$TMP_DIR/clientes.yaml" "$TMP_DIR/veiculos.yaml" "$TMP_DIR/veiculos-worker.yaml" "$TMP_DIR/vendas.yaml" "$TMP_DIR/vendas-worker.yaml" "$TMP_DIR/clientes-db.env" "$TMP_DIR/veiculos-db.env" "$TMP_DIR/vendas-db.env"; rmdir "$TMP_DIR"' EXIT
 
 terraform -chdir="$INFRA_DIR" init \
   -backend-config="bucket=$TF_STATE_BUCKET" \
@@ -59,8 +59,23 @@ if grep -Fq 'aws_api_gateway_rest_api.keyed[0]' <<<"$TF_STATE_RESOURCES"; then
   )
 fi
 terraform -chdir="$INFRA_DIR" apply "${FIRST_APPLY_ARGS[@]}"
-VENDAS_QUEUE_URL="$(terraform -chdir="$INFRA_DIR" output -raw vendas_queue_url)"
+VENDAS_EVENTOS_QUEUE_URL="$(terraform -chdir="$INFRA_DIR" output -raw vendas_eventos_queue_url)"
+VEICULOS_EVENTOS_QUEUE_URL="$(terraform -chdir="$INFRA_DIR" output -raw veiculos_eventos_queue_url)"
 VENDAS_QUEUE_ROLE_ARN="$(terraform -chdir="$INFRA_DIR" output -raw vendas_queue_role_arn)"
+VEICULOS_QUEUE_ROLE_ARN="$(terraform -chdir="$INFRA_DIR" output -raw veiculos_queue_role_arn)"
+
+# Renders a manifest replacing image, saga queue and IRSA placeholders.
+render_manifest() {
+  local manifest="$1" service="$2" image="$3"
+  sed \
+    -e "s|IMAGE_${service^^}|$image|g" \
+    -e "s|VENDAS_EVENTOS_QUEUE_URL|$VENDAS_EVENTOS_QUEUE_URL|g" \
+    -e "s|VEICULOS_EVENTOS_QUEUE_URL|$VEICULOS_EVENTOS_QUEUE_URL|g" \
+    -e "s|VENDAS_QUEUE_ROLE_ARN|$VENDAS_QUEUE_ROLE_ARN|g" \
+    -e "s|VEICULOS_QUEUE_ROLE_ARN|$VEICULOS_QUEUE_ROLE_ARN|g" \
+    -e "s|AWS_REGION_VALUE|$AWS_REGION|g" \
+    "$INFRA_DIR/k8s/$manifest.yaml" >"$TMP_DIR/$manifest.yaml"
+}
 
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
 kubectl apply -f "$INFRA_DIR/k8s/namespace.yaml"
@@ -158,28 +173,19 @@ for service in clientes veiculos vendas; do
   image="$ECR_HOST/soat13-tc-revenda-$service:$TAG"
   docker build --tag "$image" "$source_dir"
   docker push "$image"
-  if [[ "$service" == vendas ]]; then
-    sed \
-      -e "s|IMAGE_VENDAS|$image|g" \
-      -e "s|VENDAS_QUEUE_URL|$VENDAS_QUEUE_URL|g" \
-      -e "s|VENDAS_QUEUE_ROLE_ARN|$VENDAS_QUEUE_ROLE_ARN|g" \
-      -e "s|AWS_REGION|$AWS_REGION|g" \
-      "$INFRA_DIR/k8s/vendas.yaml" >"$TMP_DIR/vendas.yaml"
-    sed \
-      -e "s|IMAGE_VENDAS|$image|g" \
-      -e "s|VENDAS_QUEUE_URL|$VENDAS_QUEUE_URL|g" \
-      -e "s|AWS_REGION|$AWS_REGION|g" \
-      "$INFRA_DIR/k8s/vendas-worker.yaml" >"$TMP_DIR/vendas-worker.yaml"
-  else
-    sed "s|IMAGE_${service^^}|$image|g" "$INFRA_DIR/k8s/$service.yaml" >"$TMP_DIR/$service.yaml"
+  render_manifest "$service" "$service" "$image"
+  # vendas and veiculos run a worker that takes part in the choreographed saga.
+  if [[ "$service" != clientes ]]; then
+    render_manifest "${service}-worker" "$service" "$image"
   fi
 done
 
-kubectl apply -f "$TMP_DIR/clientes.yaml" -f "$TMP_DIR/veiculos.yaml" \
+kubectl apply -f "$TMP_DIR/clientes.yaml" -f "$TMP_DIR/veiculos.yaml" -f "$TMP_DIR/veiculos-worker.yaml" \
   -f "$TMP_DIR/vendas.yaml" -f "$TMP_DIR/vendas-worker.yaml"
 kubectl apply -f "$INFRA_DIR/k8s/ingress.yaml"
 kubectl -n revenda rollout status deployment/clientes --timeout=10m
 kubectl -n revenda rollout status deployment/veiculos --timeout=10m
+kubectl -n revenda rollout status deployment/veiculos-worker --timeout=10m
 kubectl -n revenda rollout status deployment/vendas --timeout=10m
 kubectl -n revenda rollout status deployment/vendas-worker --timeout=10m
 
