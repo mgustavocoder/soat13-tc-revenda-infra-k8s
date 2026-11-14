@@ -72,6 +72,11 @@ def bullets(items):
     )
 
 
+def repo(name):
+    url = f'https://github.com/mgustavocoder/{name}'
+    return (f'<b>{name}</b><br/><link href="{url}" color="#1f5fa8"><font size="7.3">{url.removeprefix('https://')}</font></link>')
+
+
 def table(rows, widths, header=True):
     data = [[p(str(c), 'cellb' if header and i == 0 else 'cell') for c in row] for i, row in enumerate(rows)]
     t = Table(data, colWidths=[w * CONTENT_WIDTH for w in widths], repeatRows=1 if header else 0)
@@ -343,12 +348,12 @@ def build():
           Spacer(1, 0.8 * cm),
           table([
               ['Repositório', 'Responsabilidade'],
-              ['soat13-tc-revenda-clientes', 'Cadastro e consulta de clientes'],
-              ['soat13-tc-revenda-veiculos', 'Catálogo de veículos e participante da saga (reserva, venda, liberação)'],
-              ['soat13-tc-revenda-vendas', 'Reservas e vendas; inicia a saga e reage aos eventos de veículos'],
-              ['soat13-tc-revenda-infra-k8s', 'VPC, EKS, ECR, SQS, IRSA, ALB, API Gateway, manifestos e deploy'],
-              ['soat13-tc-revenda-infra-db', 'Três instâncias RDS MySQL privadas e credenciais no Secrets Manager'],
-          ], [0.36, 0.64]),
+              [repo('soat13-tc-revenda-clientes'), 'Cadastro e consulta de clientes'],
+              [repo('soat13-tc-revenda-veiculos'), 'Catálogo de veículos e participante da saga (reserva, venda, liberação)'],
+              [repo('soat13-tc-revenda-vendas'), 'Reservas e vendas; inicia a saga e reage aos eventos de veículos'],
+              [repo('soat13-tc-revenda-infra-k8s'), 'VPC, EKS, ECR, SQS, IRSA, ALB, API Gateway, manifestos e deploy'],
+              [repo('soat13-tc-revenda-infra-db'), 'Três instâncias RDS MySQL privadas e credenciais no Secrets Manager'],
+          ], [0.48, 0.52]),
           Spacer(1, 1.2 * cm),
           p('Versão do documento: novembro de 2026.', 'small'),
           PageBreak()]
