@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vendas-worker
+  namespace: revenda
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vendas-worker
+  template:
+    metadata:
+      labels:
+        app: vendas-worker
+    spec:
+      serviceAccountName: vendas
+      containers:
+        - name: worker
+          image: IMAGE_VENDAS
+          imagePullPolicy: Always
+          command: ["npm", "run", "worker"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: vendas_db
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: vendas-db
+                  key: host
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vendas-db
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vendas-db
+                  key: password
+            - name: CLIENTES_SERVICE_URL
+              value: http://clientes.revenda.svc.cluster.local:3001
+            - name: VEICULOS_SERVICE_URL
+              value: http://veiculos.revenda.svc.cluster.local:3002
+            - name: AWS_REGION
+              value: AWS_REGION
+            - name: SQS_QUEUE_URL
+              value: VENDAS_QUEUE_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

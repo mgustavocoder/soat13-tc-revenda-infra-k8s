@@ -1,20 +1,9 @@
-import { createHash, createHmac } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
-
 const apiBaseUrl = process.env.API_BASE_URL
 if (!apiBaseUrl) throw new Error('Set API_BASE_URL to the deployed API Gateway URL, including /v1')
 
-const region = process.env.AWS_REGION || 'us-east-1'
-const credentials = JSON.parse(execFileSync(
-  'aws',
-  ['configure', 'export-credentials', '--format', 'process'],
-  { encoding: 'utf8' }
-))
-const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '')
-const date = timestamp.slice(0, 8)
-const service = 'execute-api'
-const scope = `${date}/${region}/${service}/aws4_request`
-const payloadHash = createHash('sha256').update('').digest('hex')
+const apiKey = process.env.API_KEY
+if (!apiKey) throw new Error('Set API_KEY to the deployed API Gateway key')
+
 const endpoints = [
   '/api/health',
   '/api/clientes',
@@ -22,54 +11,48 @@ const endpoints = [
   '/api/vendas'
 ]
 
-const hmac = (key, value) => createHmac('sha256', key).update(value).digest()
+const baseUrl = apiBaseUrl.replace(/\/$/, '')
+const healthUrl = new URL(`${baseUrl}${endpoints[0]}`)
+const unauthenticatedResponse = await fetch(healthUrl, {
+  signal: AbortSignal.timeout(20000)
+})
+await unauthenticatedResponse.arrayBuffer()
+if (unauthenticatedResponse.status !== 403) {
+  throw new Error(`GET ${endpoints[0]} without an API key returned HTTP ${unauthenticatedResponse.status}; expected 403`)
+}
+console.log(`GET ${endpoints[0]} without API key ... HTTP 403 (expected)`)
+
+const preflightResponse = await fetch(healthUrl, {
+  method: 'OPTIONS',
+  headers: {
+    origin: 'https://example.com',
+    'access-control-request-method': 'GET',
+    'access-control-request-headers': 'x-api-key'
+  },
+  signal: AbortSignal.timeout(20000)
+})
+await preflightResponse.arrayBuffer()
+const allowedHeaders = preflightResponse.headers
+  .get('access-control-allow-headers')
+  ?.toLowerCase()
+  .split(',')
+  .map(header => header.trim())
+if (
+  preflightResponse.status !== 200 ||
+  !allowedHeaders?.includes('x-api-key') ||
+  preflightResponse.headers.get('access-control-allow-origin') !== '*'
+) {
+  throw new Error(`OPTIONS ${endpoints[0]} returned HTTP ${preflightResponse.status} with invalid CORS headers`)
+}
+console.log(`OPTIONS ${endpoints[0]} preflight ... HTTP ${preflightResponse.status}`)
 
 for (const endpoint of endpoints) {
-  const url = new URL(`${apiBaseUrl.replace(/\/$/, '')}${endpoint}`)
-  const canonicalHeaders = [
-    `host:${url.host}`,
-    `x-amz-date:${timestamp}`,
-    ...(credentials.SessionToken ? [`x-amz-security-token:${credentials.SessionToken}`] : [])
-  ].join('\n') + '\n'
-  const signedHeaders = [
-    'host',
-    'x-amz-date',
-    ...(credentials.SessionToken ? ['x-amz-security-token'] : [])
-  ].join(';')
-  const canonicalRequest = [
-    'GET',
-    url.pathname,
-    '',
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash
-  ].join('\n')
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    timestamp,
-    scope,
-    createHash('sha256').update(canonicalRequest).digest('hex')
-  ].join('\n')
-  const signingKey = hmac(
-    hmac(
-      hmac(
-        hmac(`AWS4${credentials.SecretAccessKey}`, date),
-        region
-      ),
-      service
-    ),
-    'aws4_request'
-  )
-  const signature = createHmac('sha256', signingKey).update(stringToSign).digest('hex')
-  const authorization = `AWS4-HMAC-SHA256 Credential=${credentials.AccessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
-  const headers = {
-    'x-amz-date': timestamp,
-    authorization
-  }
-  if (credentials.SessionToken) headers['x-amz-security-token'] = credentials.SessionToken
-
-  const response = await fetch(url, { headers, signal: AbortSignal.timeout(20000) })
+  const url = new URL(`${baseUrl}${endpoint}`)
+  const response = await fetch(url, {
+    headers: { 'x-api-key': apiKey },
+    signal: AbortSignal.timeout(20000)
+  })
   await response.arrayBuffer()
-  if (!response.ok) throw new Error(`GET ${endpoint} returned HTTP ${response.status}`)
+  if (response.status !== 200) throw new Error(`GET ${endpoint} returned HTTP ${response.status}; expected 200`)
   console.log(`GET ${endpoint} ... HTTP ${response.status}`)
 }

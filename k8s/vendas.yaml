@@ -1,3 +1,11 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vendas
+  namespace: revenda
+  annotations:
+    eks.amazonaws.com/role-arn: VENDAS_QUEUE_ROLE_ARN
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,6 +21,7 @@ spec:
       labels:
         app: vendas
     spec:
+      serviceAccountName: vendas
       containers:
         - name: vendas
           image: IMAGE_VENDAS
@@ -48,6 +57,10 @@ spec:
               value: http://clientes.revenda.svc.cluster.local:3001
             - name: VEICULOS_SERVICE_URL
               value: http://veiculos.revenda.svc.cluster.local:3002
+            - name: AWS_REGION
+              value: AWS_REGION
+            - name: SQS_QUEUE_URL
+              value: VENDAS_QUEUE_URL
           readinessProbe:
             httpGet:
               path: /api/health

@@ -2,13 +2,13 @@
 set -euo pipefail
 
 export PATH="/usr/bin:$PATH"
+export AWS_PROFILE=default
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(dirname "$SCRIPT_DIR")"
 DEV_DIR="$(dirname "$INFRA_DIR")"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 TF_STATE_BUCKET="${TF_STATE_BUCKET:?Set the private S3 state bucket name}"
-DB_MASTER_USERNAME="${DB_MASTER_USERNAME:?Set a database master username}"
-DB_MASTER_PASSWORD="${DB_MASTER_PASSWORD:?Set a unique database master password}"
+DB_MASTER_USERNAME="${DB_MASTER_USERNAME:-application_db_admin}"
 CLIENTES_DIR="${CLIENTES_DIR:-$DEV_DIR/soat13-tc-revenda-clientes}"
 VEICULOS_DIR="${VEICULOS_DIR:-$DEV_DIR/soat13-tc-revenda-veiculos}"
 VENDAS_DIR="${VENDAS_DIR:-$DEV_DIR/soat13-tc-revenda-vendas}"
@@ -25,6 +25,12 @@ service_dir() {
 for tool in aws terraform kubectl docker python3; do
   command -v "$tool" >/dev/null || { echo "Required tool not found: $tool" >&2; exit 1; }
 done
+DOCKER_SERVER_VERSION="$(docker info --format '{{.ServerVersion}}' 2>/dev/null || true)"
+[[ "$DOCKER_SERVER_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)? ]] || {
+  echo "Docker Engine is unavailable; install and start Docker before deploying." >&2
+  exit 1
+}
+aws iam get-role --role-name AWSServiceRoleForAmazonEKSNodegroup >/dev/null
 for source_dir in "$CLIENTES_DIR" "$VEICULOS_DIR" "$VENDAS_DIR"; do
   [[ -f "$source_dir/Dockerfile" ]] || { echo "Dockerfile not found in $source_dir" >&2; exit 1; }
 done
@@ -34,16 +40,27 @@ CLUSTER_NAME="soat13-tc-revenda"
 TAG="${IMAGE_TAG:-$(date -u +%Y%m%d%H%M%S)}"
 ECR_HOST="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -f "$TMP_DIR/clientes.yaml" "$TMP_DIR/veiculos.yaml" "$TMP_DIR/vendas.yaml" "$TMP_DIR/clientes-db.env" "$TMP_DIR/veiculos-db.env" "$TMP_DIR/vendas-db.env"; rmdir "$TMP_DIR"' EXIT
+trap 'rm -f "$TMP_DIR/clientes.yaml" "$TMP_DIR/veiculos.yaml" "$TMP_DIR/vendas.yaml" "$TMP_DIR/vendas-worker.yaml" "$TMP_DIR/clientes-db.env" "$TMP_DIR/veiculos-db.env" "$TMP_DIR/vendas-db.env"; rmdir "$TMP_DIR"' EXIT
 
 terraform -chdir="$INFRA_DIR" init \
   -backend-config="bucket=$TF_STATE_BUCKET" \
   -backend-config="key=infra-k8s/terraform.tfstate" \
   -backend-config="region=$AWS_REGION" \
   -backend-config="use_lockfile=true"
-terraform -chdir="$INFRA_DIR" apply -auto-approve \
-  -var="region=$AWS_REGION" \
+FIRST_APPLY_ARGS=(
+  -auto-approve
+  -var="region=$AWS_REGION"
   -var="kubectl_cidr_allowlist=[\"${KUBECTL_CIDR_ALLOWLIST:?Set KUBECTL_CIDR_ALLOWLIST to your trusted public IP CIDR}\"]"
+)
+TF_STATE_RESOURCES="$(terraform -chdir="$INFRA_DIR" state list)"
+if grep -Fq 'aws_api_gateway_rest_api.keyed[0]' <<<"$TF_STATE_RESOURCES"; then
+  FIRST_APPLY_ARGS+=(
+    -var="load_balancer_listener_arn=${LOAD_BALANCER_LISTENER_ARN:?Set LOAD_BALANCER_LISTENER_ARN to preserve the existing API Gateway during apply}"
+  )
+fi
+terraform -chdir="$INFRA_DIR" apply "${FIRST_APPLY_ARGS[@]}"
+VENDAS_QUEUE_URL="$(terraform -chdir="$INFRA_DIR" output -raw vendas_queue_url)"
+VENDAS_QUEUE_ROLE_ARN="$(terraform -chdir="$INFRA_DIR" output -raw vendas_queue_role_arn)"
 
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
 kubectl apply -f "$INFRA_DIR/k8s/namespace.yaml"
@@ -53,19 +70,24 @@ terraform -chdir="$DEV_DIR/soat13-tc-revenda-infra-db" init \
   -backend-config="key=infra-db/terraform.tfstate" \
   -backend-config="region=$AWS_REGION" \
   -backend-config="use_lockfile=true"
-export TF_VAR_tf_state_bucket="$TF_STATE_BUCKET"
 export TF_VAR_region="$AWS_REGION"
 export TF_VAR_master_username="$DB_MASTER_USERNAME"
-export TF_VAR_master_password="$DB_MASTER_PASSWORD"
 terraform -chdir="$DEV_DIR/soat13-tc-revenda-infra-db" apply -auto-approve
 
 DB_HOSTS_JSON="$(terraform -chdir="$DEV_DIR/soat13-tc-revenda-infra-db" output -json db_hosts)"
-DB_USERNAME="$DB_MASTER_USERNAME"
+DB_SECRET_ARNS_JSON="$(terraform -chdir="$DEV_DIR/soat13-tc-revenda-infra-db" output -json db_master_secret_arns)"
 umask 077
 for service in clientes veiculos vendas; do
   db_host="$(printf '%s' "$DB_HOSTS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$service")"
+  db_secret_arn="$(printf '%s' "$DB_SECRET_ARNS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$service")"
+  db_secret_json="$(aws secretsmanager get-secret-value --region "$AWS_REGION" \
+    --secret-id "$db_secret_arn" --query SecretString --output text)"
+  db_username="$(printf '%s' "$db_secret_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["username"])')"
+  db_password="$(printf '%s' "$db_secret_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])')"
+  unset db_secret_json
   secret_file="$TMP_DIR/${service}-db.env"
-  printf 'host=%s\nusername=%s\npassword=%s\n' "$db_host" "$DB_USERNAME" "$DB_MASTER_PASSWORD" >"$secret_file"
+  printf 'host=%s\nusername=%s\npassword=%s\n' "$db_host" "$db_username" "$db_password" >"$secret_file"
+  unset db_password
   kubectl -n revenda create secret generic "${service}-db" \
     --from-env-file="$secret_file" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -136,14 +158,30 @@ for service in clientes veiculos vendas; do
   image="$ECR_HOST/soat13-tc-revenda-$service:$TAG"
   docker build --tag "$image" "$source_dir"
   docker push "$image"
-  sed "s|IMAGE_${service^^}|$image|g" "$INFRA_DIR/k8s/$service.yaml" >"$TMP_DIR/$service.yaml"
+  if [[ "$service" == vendas ]]; then
+    sed \
+      -e "s|IMAGE_VENDAS|$image|g" \
+      -e "s|VENDAS_QUEUE_URL|$VENDAS_QUEUE_URL|g" \
+      -e "s|VENDAS_QUEUE_ROLE_ARN|$VENDAS_QUEUE_ROLE_ARN|g" \
+      -e "s|AWS_REGION|$AWS_REGION|g" \
+      "$INFRA_DIR/k8s/vendas.yaml" >"$TMP_DIR/vendas.yaml"
+    sed \
+      -e "s|IMAGE_VENDAS|$image|g" \
+      -e "s|VENDAS_QUEUE_URL|$VENDAS_QUEUE_URL|g" \
+      -e "s|AWS_REGION|$AWS_REGION|g" \
+      "$INFRA_DIR/k8s/vendas-worker.yaml" >"$TMP_DIR/vendas-worker.yaml"
+  else
+    sed "s|IMAGE_${service^^}|$image|g" "$INFRA_DIR/k8s/$service.yaml" >"$TMP_DIR/$service.yaml"
+  fi
 done
 
-kubectl apply -f "$TMP_DIR/clientes.yaml" -f "$TMP_DIR/veiculos.yaml" -f "$TMP_DIR/vendas.yaml"
+kubectl apply -f "$TMP_DIR/clientes.yaml" -f "$TMP_DIR/veiculos.yaml" \
+  -f "$TMP_DIR/vendas.yaml" -f "$TMP_DIR/vendas-worker.yaml"
 kubectl apply -f "$INFRA_DIR/k8s/ingress.yaml"
 kubectl -n revenda rollout status deployment/clientes --timeout=10m
 kubectl -n revenda rollout status deployment/veiculos --timeout=10m
 kubectl -n revenda rollout status deployment/vendas --timeout=10m
+kubectl -n revenda rollout status deployment/vendas-worker --timeout=10m
 
 for attempt in $(seq 1 60); do
   ALB_DNS="$(kubectl -n revenda get ingress revenda -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"

@@ -14,12 +14,18 @@ terraform {
       source  = "hashicorp/http"
       version = "~> 3.4"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.14"
+    }
   }
 }
 
 provider "aws" {
   region = var.region
 }
+
+provider "time" {}
 
 provider "helm" {
   kubernetes {
